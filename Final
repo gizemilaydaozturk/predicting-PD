@@ -1,0 +1,273 @@
+@author: gizemilaydaozturk
+"""
+
+import pandas as pd
+import seaborn as sns
+from scipy.io import loadmat
+import numpy as np
+from pydicom import dcmread
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+import matplotlib.pyplot as plt
+from sklearn.svm import SVC
+from sklearn.datasets import load_iris
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.datasets import make_classification
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from scipy.stats import f_oneway, kruskal
+import os
+import pydicom
+import cv2
+from skimage import exposure, filters, transform
+
+#%% 
+# Run data as CSV file
+data = pd.read_csv('/Users/gizemilaydaozturk/Downloads/Final_Final_4_14_2024.csv')
+del data['Sex']
+del data['Image Data ID']
+
+#%% 
+#Practice run DCM image
+dc = dcmread('/Users/gizemilaydaozturk/Downloads/PPMI/75565/2D_GRE-MT/2022-11-15_16_22_36.0/I1660591/PPMI_75565_MR_2D_GRE-MT__br_raw_20230127045935695_9_S1190730_I1660591.dcm')
+print(dc)
+
+plt.imshow(dc.pixel_array, cmap=plt.cm.bone) 
+
+downscaled_image = transform.resize(dc.pixel_array, (256,256), anti_aliasing=True)
+a = dc.pixel_array
+b = a.reshape(-1)
+
+#%% 
+#open all dcm files in folder
+def open_dcm_files_in_folder(folder_path):
+    datasets = []
+    subjects = []
+    for root, dirs, files in os.walk(folder_path):
+        for dcm_file in files:
+            if dcm_file.endswith('.dcm'):
+                dcm_path = os.path.join(root, dcm_file)
+                try:
+                    dataset = pydicom.dcmread(dcm_path)
+                    if len(dataset.pixel_array.shape) != 2:  # Skip images with inconsistent shapes
+                        print(f"Skipping image with shape {dataset.pixel_array.shape}: {dcm_file}")
+                        continue
+                    datasets.append(transform.resize(dataset.pixel_array, (256, 256), anti_aliasing=True))
+                    subjects.append(int(dcm_file[5:11]))
+                except Exception as e:
+                    print(f"Error processing DICOM file: {e}")
+    return datasets, subjects
+
+datasets, subjects = open_dcm_files_in_folder('/Users/gizemilaydaozturk/Downloads/PPMI 5/')
+#%%
+#contours grey matter
+pics = []
+for dataset in datasets:
+    try:
+        # pixel_array = dataset.pixel_array
+        rows = dataset.reshape(-1)
+        pics.append(rows)
+    except Exception as e:
+        print(f"Error processing DICOM file: {e}")
+        
+
+    
+#%%
+# Apply PCA
+# target_shape = (256, 256)
+# resized_pics = [transform.resize(image, target_shape, anti_aliasing=True) for image in pics]
+pca = PCA(n_components=15)
+# Flatten the resized images
+# flattened_pics = [image.flatten() for image in resized_pics]
+
+# Apply PCA
+pca_result = pca.fit_transform(np.array(pics))
+explained_variance = pca.explained_variance_ratio_
+
+# Plot explained variance
+plt.figure()
+plt.title('Variance of Clusters')
+plt.xlabel('Clusters')
+plt.ylabel('Variance')
+sns.barplot(x=np.arange(len(explained_variance)), y=explained_variance)
+plt.show()
+sns.barplot(x = np.arange(len(explained_variance)),
+            y = explained_variance) 
+#%%
+# Convert pics list to DataFrame
+# pics_df = pd.DataFrame(pics)
+# pics_df['subject'] = subjects
+
+subject_df = pd.DataFrame(data = {'Subject': subjects})
+
+subject_df = subject_df.merge(data[['Subject', 'Group']].drop_duplicates('Subject'), on ='Subject', how = 'left')
+
+
+
+# Now 'final' dataframe contains 'Subject', 'Group', and 'Pictures' columns
+#%%
+
+
+
+
+#%%
+sse = []
+for k in range(1, 101):
+    kmeans = KMeans(n_clusters=k, random_state=42).fit(pca_result)
+    sse.append(kmeans.inertia_)
+plt.figure(figsize=(10, 6))
+plt.plot(range(len(sse)), sse, marker='o')
+plt.title('Number of Clusters and their SSE') #The "elbow" in the graph is a point where adding more components provides diminishing returns in terms of explaining additional variance
+plt.xlabel('Number of Clusters')
+plt.ylabel('SSE')
+plt.show()    
+#%%
+n_clusters = 5  #4 clusters
+    
+#Apply KMeans clustering on the PCA-transformed data
+kmeans = KMeans(n_clusters=n_clusters, random_state=42)
+kmeans.fit(pca_result)
+labels = kmeans.labels_
+
+subject_df['clusters'] = labels
+    # Plot the PCA results with cluster labels
+fig = plt.figure(figsize=(12, 12))
+# ax = fig.add_subplot(projection='2d')
+# ax.scatter(pca_result[:, 0], 
+#                pca_result[:, 1], 
+#                c=labels, cmap='viridis', label = np.unique(labels))
+
+color_dict = {0: 1,
+              1: 3,
+              2: 4,
+              3: 0,
+              4: 2}
+
+pca_df = pd.DataFrame(data = pca_result, columns = [str(i) for i in range(15)])
+pca_df['label'] = labels
+pca_df['clean_label'] = pca_df.label.map(color_dict)
+
+sns.scatterplot(x = '0', y = '1', hue = 'clean_label', palette="bright", data =pca_df)
+plt.xlabel('Principal Component 1')
+plt.ylabel('Principal Component 2')
+plt.legend()
+plt.grid(True)
+
+
+#%%
+#knearest neighbors
+
+# Feature Choices
+X = np.array(pca_result)
+y = subject_df.Group
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2)
+
+neigh = KNeighborsClassifier(n_neighbors=12)
+neigh.fit(X_train, y_train)
+score = neigh.score(X_test, y_test)
+print("Your accuracy score is: ", score)
+
+#confusion matrix knearest neighbor
+y_pred = neigh.predict(X_test)
+cm = confusion_matrix(y_test, y_pred)
+disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels = best_knn_model.classes_)
+disp.plot()
+plt.xlabel('Actual Values')
+plt.ylabel('Predicted Values')
+
+#crossvalidation scores
+cv_scores = cross_val_score(neigh, X, y, cv=10)
+print("Cross-Validation Scores:", cv_scores)
+print("Mean CV Score:", np.mean(cv_scores))
+#%%
+# Define the parameter grid for KNeighborsClassifier
+k_range = list(range(24))
+param_grid = dict(n_neighbors=k_range)
+
+# Instantiate GridSearchCV
+grid_search = GridSearchCV(estimator=KNeighborsClassifier(), param_grid=param_grid, cv=5, scoring='accuracy')
+
+# Fit GridSearchCV to your data
+grid_search.fit(X_train, y_train)
+best_knn_model = grid_search.best_estimator_
+best_params = grid_search.best_params_
+print("Best parameters found:", best_params)
+
+# Evaluate the best model on your test set
+best_model_score = best_knn_model.score(X_test, y_test)
+print("Accuracy of the best model:", best_model_score)
+
+# Confusion matrix of the best model
+y_pred_best = best_knn_model.predict(X_test)
+conf_matrix_best = confusion_matrix(y_test, y_pred_best)
+disp = ConfusionMatrixDisplay(confusion_matrix=conf_matrix_best, display_labels = best_knn_model.classes_)
+disp.plot()
+plt.xlabel('Actual Values')
+plt.ylabel('Predicted Values')
+
+#crossvalidation scores
+cv_scores_best = cross_val_score(neigh, X, y, cv=10)
+print("Best Cross-Validation Scores:", cv_scores_best)
+print("Best CV Score:", np.max(cv_scores))
+
+#%%
+
+group_totals = {'Control': 640,
+                'PD': 1239,
+                'Prodromal': 1386}
+
+color_dict = {0: 1,
+              1: 3,
+              2: 4,
+              3: 0,
+              4: 2}
+
+subject_df['label'] = labels
+subject_df['clean_label'] = subject_df.label.map(color_dict)
+
+fig, axs = plt.subplots(1,5)
+for cluster, cluster_df in subject_df.groupby('clusters'):
+    a = cluster_df.groupby('Group').count().reset_index()
+    a['percent_total'] = a.apply(lambda x: x.clusters/group_totals[x.Group], axis =1)
+    axs[int(cluster)].pie(a.percent_total, labels = a.Group)
+    #axs[int(cluster)].title(cluster)
+
+
+#%%
+group_totals = {'Control': 640,
+                'PD': 1239,
+                'Prodromal': 1386}
+
+color_dict = {0: 1,
+              1: 3,
+              2: 4,
+              3: 0,
+              4: 2}
+
+subject_df['label'] = labels
+subject_df['clean_label'] = subject_df.label.map(color_dict)
+
+# Sort clusters based on the color_dict values
+sorted_clusters = sorted(subject_df['clusters'].unique(), key=lambda x: color_dict[x])
+
+# Create a figure and subplots
+fig, axs = plt.subplots(1, 5, figsize=(15, 5))
+
+# Iterate over sorted clusters
+for i, cluster in enumerate(sorted_clusters):
+    cluster_df = subject_df[subject_df['clusters'] == cluster]
+    group_counts = cluster_df.groupby('Group').size().reset_index(name='count')
+    group_counts['percent_total'] = group_counts['count'] / group_counts['Group'].map(group_totals)
+    
+    # Plot pie chart
+    axs[i].pie(group_counts['percent_total'], labels=group_counts['Group'], autopct='%1.1f%%', startangle=90)
+    axs[i].set_title(i)
+
+# Adjust layout
+plt.tight_layout()
+plt.show()
+	
